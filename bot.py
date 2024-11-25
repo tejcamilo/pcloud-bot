@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 from requests.auth import HTTPBasicAuth
 import boto3
 from datetime import datetime
+from pymongo import MongoClient
 
 app = Flask(__name__)
 
@@ -25,6 +26,11 @@ AWS_SECRET_ACCESS_KEY = os.getenv('AWS_SECRET_ACCESS_KEY')
 AWS_SESSION_TOKEN = os.getenv('AWS_SESSION_TOKEN')
 AWS_DEFAULT_REGION = os.getenv('AWS_DEFAULT_REGION')
 
+# MongoDB credentials
+MONGO_URI = os.getenv('MONGO_URI')
+MONGO_DB_NAME = os.getenv('MONGO_DB_NAME')
+MONGO_COLLECTION_NAME = os.getenv('MONGO_COLLECTION_NAME')
+
 # Initialize Twilio Client using API Key and Secret
 client = Client(TWILIO_API_KEY, TWILIO_API_SECRET, TWILIO_ACCOUNT_SID)
 
@@ -38,6 +44,15 @@ s3_client = boto3.client(
 )
 S3_BUCKET_NAME = 'pcloud-ur'
 
+# Initialize MongoDB client
+try:
+    mongo_client = MongoClient(MONGO_URI)
+    db = mongo_client[MONGO_DB_NAME]
+    collection = db[MONGO_COLLECTION_NAME]
+    print("Connected to MongoDB")
+except Exception as e:
+    print(f"Error connecting to MongoDB: {e}")
+
 # Chatbot State Management
 user_state = {}
 
@@ -49,6 +64,9 @@ def whatsapp_bot():
     media_url = request.values.get('MediaUrl0')
     response = MessagingResponse()
     msg = response.message()
+
+    print(f"Incoming message from {from_number}: {incoming_msg}")
+    print(f"Current state: {user_state.get(from_number, {}).get('stage')}")
 
     if from_number not in user_state:
         user_state[from_number] = {'stage': 'ask_id'}
@@ -66,24 +84,26 @@ def whatsapp_bot():
                 user_state[from_number]['image'] = media_url
                 user_state[from_number]['timestamp'] = datetime.now().strftime('%Y%m%d_%H%M%S')
                 user_state[from_number]['stage'] = 'ask_description'
-                msg.body("Por favor proporciona una descripción de la imagen.")
+                msg.body("Por favor proporciona una descripción de la imagen")
             else:
                 msg.body("Envía la imagen 📷.")
         
         elif state['stage'] == 'ask_description':
+            print("Processing description stage")
             user_state[from_number]['description'] = incoming_msg
 
             # Attempt to save the image and description with error handling
-            save_status = save_image(user_state[from_number]['image'], from_number, user_state[from_number]['description'], user_state[from_number]['timestamp'])
+            save_status, image_url = save_image(user_state[from_number]['image'], from_number, user_state[from_number]['description'], user_state[from_number]['timestamp'])
 
             if save_status:
-                msg.body(f"La imagen y la descripción se han guardado correctamente.")
+                msg.body(f"La imagen y la descripción se han guardado correctamente\nImagen: {image_url}")
             else:
-                msg.body("⚠️ Ha ocurrido un error. Por favor intenta de nuevo.")
+                msg.body("⚠️ Ha ocurrido un error. Por favor intenta de nuevo")
             
             # Reset state for this user
             del user_state[from_number]
 
+    print("Returning response to Twilio")
     return str(response)
 
 def save_image(image_url, from_number, description, timestamp):
@@ -110,34 +130,50 @@ def save_image(image_url, from_number, description, timestamp):
         content_type = response.headers.get('Content-Type')
         if not content_type or 'image' not in content_type:
             print(f"Invalid content type: {content_type}")
-            return False
+            return False, None
 
         # Get the file extension from the content type
         extension = content_type.split('/')[-1]
         filename = f"{patient_id}_{timestamp}.{extension}"
-        description_filename = f"{patient_id}_{timestamp}.txt"
 
-        # Upload the image to S3
-        s3_client.upload_fileobj(response.raw, S3_BUCKET_NAME, filename)
+        # Upload the image to S3 with the correct Content-Type and public-read ACL
+        s3_client.upload_fileobj(
+            response.raw, 
+            S3_BUCKET_NAME, 
+            filename,
+            ExtraArgs={'ContentType': content_type, 'ACL': 'public-read'}
+        )
 
-        # Upload the description to S3
-        s3_client.put_object(Bucket=S3_BUCKET_NAME, Key=description_filename, Body=description)
+        # Generate public URL for the uploaded image
+        image_url = f"https://{S3_BUCKET_NAME}.s3.amazonaws.com/{filename}"
 
-        print(f"Image and description saved to S3 as {filename} and {description_filename}")
-        return True
+        # Save image URL and description to MongoDB
+        document = {
+            'patient_id': patient_id,
+            'timestamp': timestamp,
+            'image_url': image_url,
+            'description': description
+        }
+        print(f"Saving document to MongoDB: {document}")
+        result = collection.insert_one(document)
+        print(f"Document saved to MongoDB with ID: {result.inserted_id}")
+
+        print(f"Image saved to S3 as {filename}")
+        print(f"Generated public URL: Image URL: {image_url}")
+        return True, image_url
 
     except requests.exceptions.Timeout:
         print("Request timed out while downloading the image.")
-        return False
+        return False, None
     except requests.exceptions.RequestException as e:
         print(f"Error downloading image: {e}")
-        return False
+        return False, None
     except IOError as e:
         print(f"File I/O error: {e}")
-        return False
+        return False, None
     except Exception as e:
         print(f"Unexpected error: {e}")
-        return False
+        return False, None
 
 if __name__ == '__main__':
     app.run(debug=True, host="0.0.0.0", port=5000)
