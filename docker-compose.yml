@@ -1,0 +1,12 @@
+services:
+  web:
+    build: .
+    ports:
+      - "5000:5000"
+    volumes:
+      - .:/app
+    environment:
+      - TWILIO_API_KEY=${TWILIO_API_KEY}
+      - TWILIO_API_SECRET=${TWILIO_API_SECRET}
+      - TWILIO_ACCOUNT_SID=${TWILIO_ACCOUNT_SID}
+      - TWILIO_WA_NUMBER=${TWILIO_PHONE_NUMBER}

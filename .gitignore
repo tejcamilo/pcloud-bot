@@ -1,0 +1,8 @@
+# Environment variables
+.env
+
+# Virtual environment
+.venv
+
+# Image folder
+received_images
