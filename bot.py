@@ -49,22 +49,18 @@ def whatsapp_bot():
     media_url = request.values.get('MediaUrl0')
     response = MessagingResponse()
     msg = response.message()
-    print(request.values)
 
-    # Check if the user is new or existing
     if from_number not in user_state:
-        user_state[from_number] = {'stage': 'ask_name'}
-        msg.body("👋 Hola! Por favor ingresa el nombre del paciente")
+        user_state[from_number] = {'stage': 'ask_id'}
+        msg.body("👋 Hola! Por favor ingresa el ID del paciente")
     else:
         state = user_state[from_number]
 
-        # Asking for the user's name
-        if state['stage'] == 'ask_name':
-            user_state[from_number]['name'] = incoming_msg.title()
+        if state['stage'] == 'ask_id':
+            user_state[from_number]['id'] = incoming_msg
             user_state[from_number]['stage'] = 'ask_image'
-            msg.body(f"Por favor adjunta la imagen para el paciente: {user_state[from_number]['name']}")
+            msg.body(f"Por favor adjunta la imagen para el paciente con ID: {user_state[from_number]['id']}")
         
-        # Asking for the image
         elif state['stage'] == 'ask_image':
             if media_url:
                 user_state[from_number]['image'] = media_url
@@ -93,34 +89,33 @@ def whatsapp_bot():
 def save_image(image_url, from_number, description, timestamp):
     """
     Downloads the image from the URL and saves it to S3 with Basic Auth for Twilio.
-    The image file name will be the user's name and the timestamp of the message.
+    The image file name will be the patient's ID and the timestamp of the message.
     Returns True if successful, False otherwise.
     """
     try:
-        # Get the user's name to generate the filename
-        name = user_state.get(from_number, {}).get('name', 'unknown_user').replace(' ', '-').lower()
+        # Get the patient's ID to generate the filename
+        patient_id = user_state.get(from_number, {}).get('id', 'unknown_id').replace(' ', '-').lower()
 
         # Make a GET request to fetch the image with Twilio Basic HTTP Authentication
         response = requests.get(
             image_url, 
             auth=HTTPBasicAuth(TWILIO_API_KEY, TWILIO_API_SECRET),
             stream=True,
-            timeout=10  # Set a timeout for the request
         )
-        
-        # Raise an exception if the request was unsuccessful
+
+        # Check if the request was successful
         response.raise_for_status()
 
-        # Check if the response is an image
-        content_type = response.headers['Content-Type']
-        if 'image' not in content_type:
+        # Get the content type of the response
+        content_type = response.headers.get('Content-Type')
+        if not content_type or 'image' not in content_type:
             print(f"Invalid content type: {content_type}")
             return False
 
         # Get the file extension from the content type
         extension = content_type.split('/')[-1]
-        filename = f"{name}_{timestamp}.{extension}"
-        description_filename = f"{name}_{timestamp}.txt"
+        filename = f"{patient_id}_{timestamp}.{extension}"
+        description_filename = f"{patient_id}_{timestamp}.txt"
 
         # Upload the image to S3
         s3_client.upload_fileobj(response.raw, S3_BUCKET_NAME, filename)
