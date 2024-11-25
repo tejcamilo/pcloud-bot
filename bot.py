@@ -5,7 +5,7 @@ import os
 import requests
 from dotenv import load_dotenv
 from requests.auth import HTTPBasicAuth
-import uuid  # Importing the uuid module to generate random IDs
+import boto3
 from datetime import datetime
 
 app = Flask(__name__)
@@ -19,8 +19,24 @@ TWILIO_API_KEY = os.getenv('TWILIO_API_KEY')  # Your Twilio API Key SID
 TWILIO_API_SECRET = os.getenv('TWILIO_API_SECRET')  # Your Twilio API Secret
 TWILIO_WHATSAPP_NUMBER = os.getenv('TWILIO_WA_NUMBER')  # Your Twilio number
 
+# AWS credentials
+AWS_ACCESS_KEY_ID = os.getenv('AWS_ACCESS_KEY_ID')
+AWS_SECRET_ACCESS_KEY = os.getenv('AWS_SECRET_ACCESS_KEY')
+AWS_SESSION_TOKEN = os.getenv('AWS_SESSION_TOKEN')
+AWS_DEFAULT_REGION = os.getenv('AWS_DEFAULT_REGION')
+
 # Initialize Twilio Client using API Key and Secret
 client = Client(TWILIO_API_KEY, TWILIO_API_SECRET, TWILIO_ACCOUNT_SID)
+
+# Initialize S3 client
+s3_client = boto3.client(
+    's3',
+    aws_access_key_id=AWS_ACCESS_KEY_ID,
+    aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
+    aws_session_token=AWS_SESSION_TOKEN,
+    region_name=AWS_DEFAULT_REGION
+)
+S3_BUCKET_NAME = 'pcloud-ur'
 
 # Chatbot State Management
 user_state = {}
@@ -76,16 +92,13 @@ def whatsapp_bot():
 
 def save_image(image_url, from_number, description, timestamp):
     """
-    Downloads the image from the URL and saves it locally with Basic Auth for Twilio.
+    Downloads the image from the URL and saves it to S3 with Basic Auth for Twilio.
     The image file name will be the user's name and the timestamp of the message.
     Returns True if successful, False otherwise.
     """
     try:
         # Get the user's name to generate the filename
         name = user_state.get(from_number, {}).get('name', 'unknown_user').replace(' ', '-').lower()
-
-        # Generate a random unique ID for the image filename
-        random_id = str(uuid.uuid4())
 
         # Make a GET request to fetch the image with Twilio Basic HTTP Authentication
         response = requests.get(
@@ -105,25 +118,17 @@ def save_image(image_url, from_number, description, timestamp):
             return False
 
         # Get the file extension from the content type
-        extension = extension = content_type.split('/')[-1]
+        extension = content_type.split('/')[-1]
         filename = f"{name}_{timestamp}.{extension}"
         description_filename = f"{name}_{timestamp}.txt"
 
-        # Define the file paths to save the image and description
-        image_path = os.path.join('./received_images', filename)
-        description_path = os.path.join('./received_images', description_filename)
+        # Upload the image to S3
+        s3_client.upload_fileobj(response.raw, S3_BUCKET_NAME, filename)
 
-        # Save the image to a file
-        with open(image_path, 'wb') as file:
-            for chunk in response.iter_content(1024):
-                file.write(chunk)
+        # Upload the description to S3
+        s3_client.put_object(Bucket=S3_BUCKET_NAME, Key=description_filename, Body=description)
 
-        # Save the description to a text file
-        with open(description_path, 'w') as file:
-            file.write(description)
-
-        print(f"Image saved as {image_path}")
-        print(f"Description saved as {description_path}")
+        print(f"Image and description saved to S3 as {filename} and {description_filename}")
         return True
 
     except requests.exceptions.Timeout:
@@ -140,8 +145,4 @@ def save_image(image_url, from_number, description, timestamp):
         return False
 
 if __name__ == '__main__':
-    # Create the directory to save images if it doesn't exist
-    if not os.path.exists('./received_images'):
-        os.makedirs('./received_images')
-
     app.run(debug=True, host="0.0.0.0", port=5000)
