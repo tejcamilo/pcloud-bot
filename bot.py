@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 from requests.auth import HTTPBasicAuth
 import boto3
 from datetime import datetime
+import uuid
 from pymongo import MongoClient
 
 app = Flask(__name__)
@@ -26,10 +27,8 @@ AWS_SECRET_ACCESS_KEY = os.getenv('AWS_SECRET_ACCESS_KEY')
 AWS_SESSION_TOKEN = os.getenv('AWS_SESSION_TOKEN')
 AWS_DEFAULT_REGION = os.getenv('AWS_DEFAULT_REGION')
 
-# MongoDB credentials
-MONGO_URI = os.getenv('MONGO_URI')
-MONGO_DB_NAME = os.getenv('MONGO_DB_NAME')
-MONGO_COLLECTION_NAME = os.getenv('MONGO_COLLECTION_NAME')
+# DynamoDB table name
+DYNAMODB_TABLE_NAME = os.getenv('DYNAMODB_TABLE_NAME')
 
 # Initialize Twilio Client using API Key and Secret
 client = Client(TWILIO_API_KEY, TWILIO_API_SECRET, TWILIO_ACCOUNT_SID)
@@ -44,14 +43,16 @@ s3_client = boto3.client(
 )
 S3_BUCKET_NAME = 'pcloud-ur'
 
-# Initialize MongoDB client
-try:
-    mongo_client = MongoClient(MONGO_URI)
-    db = mongo_client[MONGO_DB_NAME]
-    collection = db[MONGO_COLLECTION_NAME]
-    print("Connected to MongoDB")
-except Exception as e:
-    print(f"Error connecting to MongoDB: {e}")
+# Initialize DynamoDB client
+dynamodb = boto3.resource(
+    'dynamodb',
+    aws_access_key_id=AWS_ACCESS_KEY_ID,
+    aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
+    aws_session_token=AWS_SESSION_TOKEN,
+    region_name=AWS_DEFAULT_REGION
+)
+table = dynamodb.Table(DYNAMODB_TABLE_NAME)
+print("Connected to DynamoDB")
 
 # Chatbot State Management
 user_state = {}
@@ -96,9 +97,9 @@ def whatsapp_bot():
             save_status, image_url = save_image(user_state[from_number]['image'], from_number, user_state[from_number]['description'], user_state[from_number]['timestamp'])
 
             if save_status:
-                msg.body(f"La imagen y la descripción se han guardado correctamente\nImagen: {image_url}")
+                msg.body(f"La imagen y la descripción se han guardado correctamente.\nImagen: {image_url}")
             else:
-                msg.body("⚠️ Ha ocurrido un error. Por favor intenta de nuevo")
+                msg.body("⚠️ Ha ocurrido un error. Por favor intenta de nuevo.")
             
             # Reset state for this user
             del user_state[from_number]
@@ -113,6 +114,9 @@ def save_image(image_url, from_number, description, timestamp):
     Returns True if successful, False otherwise.
     """
     try:
+        # Generate a unique ID for the item
+        item_id = str(uuid.uuid4())
+
         # Get the patient's ID to generate the filename
         patient_id = user_state.get(from_number, {}).get('id', 'unknown_id').replace(' ', '-').lower()
 
@@ -147,17 +151,18 @@ def save_image(image_url, from_number, description, timestamp):
         # Generate public URL for the uploaded image
         image_url = f"https://{S3_BUCKET_NAME}.s3.amazonaws.com/{filename}"
 
-        # Save image URL and description to MongoDB
+        # Save image URL and description to DynamoDB
         document = {
+            '_id': item_id,  # Use UUID for the _id value
             'user_id': from_number,
             'patient_id': patient_id,
             'timestamp': timestamp,
             'image_url': image_url,
             'description': description
         }
-        print(f"Saving document to MongoDB: {document}")
-        collection.insert_one(document)
-        print("Document saved to MongoDB")
+        print(f"Saving document to DynamoDB: {document}")
+        table.put_item(Item=document)
+        print("Document saved to DynamoDB")
 
         print(f"Image saved to S3 as {filename}")
         print(f"Generated public URL: Image URL: {image_url}")
